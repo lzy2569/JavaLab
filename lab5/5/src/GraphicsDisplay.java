@@ -5,7 +5,14 @@ import 	java.awt.geom.GeneralPath;
 import	java.awt.geom.Line2D;
 import java.awt.geom.PathIterator;
 import	java.awt.geom.Point2D;
+import java.awt.event.MouseEvent;
+import java.awt.event.MouseListener;
+import java.awt.event.MouseMotionListener;
 import	java.awt.geom.Rectangle2D;
+import java.text.DecimalFormat;
+import java.text.NumberFormat;
+import java.util.EmptyStackException;
+import java.util.Stack;
 import	javax.swing.JPanel;
 @SuppressWarnings("serial")
 public class GraphicsDisplay extends JPanel
@@ -20,11 +27,41 @@ public class GraphicsDisplay extends JPanel
     private double minY;
     private double maxY;
     private double scale;									// 二手显示比例
+    private double scaleX;
+    private double scaleY;
     private BasicStroke graphicsStroke;						// 不同风格的线条画
     private BasicStroke axisStroke;
     private BasicStroke markerStroke;
     private BasicStroke lineGraphics;
-    private Font axisFont;									// 用于显示标签的各种字体
+    private Font axisFont;// 用于显示标签的各种字体
+    private DecimalFormat formatter = (DecimalFormat) NumberFormat.getInstance();
+    private GraphPoint SMP;
+    private Font captionFont;
+    private Rectangle2D.Double rect;
+    private boolean selMode = false;
+    private boolean dragMode = false;
+    private int mausePX = 0;
+    private int mausePY = 0;
+    private Stack<Zone> stack = new Stack<Zone>();
+    private BasicStroke selStroke;
+    private Zone zone = new Zone();
+    private boolean zoom=false;
+    private int[][] graphicsDataI;
+    class GraphPoint {
+        double xd;
+        double yd;
+        int x;
+        int y;
+        int n;
+    }
+    class Zone {
+        double MAXY;
+        double tmp;
+        double MINY;
+        double MAXX;
+        double MINX;
+        boolean use;
+    }
     public GraphicsDisplay()
     {
         setBackground(Color.WHITE);							// 显示区域的背景色为白色
@@ -35,13 +72,24 @@ public class GraphicsDisplay extends JPanel
 
         // 图形笔 - 绘制形状的边界
         //线宽 2.0f - 两点，10.0f - 闭合角 10 度
-        graphicsStroke = new BasicStroke(10.0f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_ROUND, 10.0f, new float[] {50,25, 50,25, 50,25, 50,25, 50,25}, 0.0f);
+        graphicsStroke = new BasicStroke(1.0f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_ROUND, 10.0f, new float[] {5,2, 5,2, 5,2, 5,2, 5,2}, 0.0f);
         // 绘制坐标轴的笔
         axisStroke = new BasicStroke(2.0f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_MITER, 10.0f, null, 0.0f);
         // 用于绘制标记轮廓的笔
         markerStroke = new BasicStroke(1.0f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_MITER, 10.0f, null, 0.0f);
         // 轴标签的字体
         axisFont = new Font("Serif", Font.BOLD, 36);
+
+        selStroke = new BasicStroke(1.0f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_MITER, 10.0f, new float[] { 8, 8 }, 0.0f);
+
+
+        captionFont = new Font("Serif", Font.BOLD, 10);
+
+        MouseMotionHandler mouseMotionHandler = new MouseMotionHandler();
+        addMouseMotionListener(mouseMotionHandler);
+        addMouseListener(mouseMotionHandler);
+        rect = new Rectangle2D.Double();
+        zone.use = false;
     }
     //这个方法是从“用图表打开文件”菜单项的处理程序调用的
     // 成功加载数据时的主应用程序窗口
@@ -50,6 +98,7 @@ public class GraphicsDisplay extends JPanel
         // 在类的内部字段中存储点数组
         this.graphicsData = graphicsData;
         // 请求重新绘制组件，即隐式调用paintComponent()
+        graphicsDataI = new int[graphicsData.length][2];
         repaint();
     }
 
@@ -71,7 +120,13 @@ public class GraphicsDisplay extends JPanel
         this.showGraphics = showGraphics;
         repaint();
     }
+    public double getValue(int i, int j) {
+        return graphicsData[i][j];
+    }
 
+    public int getDataLenght() {
+        return graphicsData.length;
+    }
     /*要获取类的实例，需要将Graphics实例的Graphics2D类型强制转换，在paintComponent()方法中作为参数接收*/
     public void paintComponent(Graphics g)
     {
@@ -86,6 +141,12 @@ public class GraphicsDisplay extends JPanel
         // 它的左上角是 (minX, maxY) - 右下角是 (maxX, minY)
         minX = graphicsData[0][0];
         maxX = graphicsData[graphicsData.length-1][0];
+        if (zone.use) {
+            minX = zone.MINX;
+        }
+        if (zone.use) {
+            maxX = zone.MAXX;
+        }
         minY = graphicsData[0][1];
         maxY = minY;
         // 查找函数的最小值和最大值
@@ -100,31 +161,43 @@ public class GraphicsDisplay extends JPanel
                 maxY = graphicsData[i][1];
             }
         }
+        if (zone.use) {
+            minY = zone.MINY;
+        }
+        if (zone.use) {
+            maxY = zone.MAXY;
+        }
+        scaleX = 1.0 / (maxX - minX);
+        scaleY = 1.0 / (maxY - minY);
+        scaleX *= getSize().getWidth();
+        scaleY *= getSize().getHeight();
+
         /* 第 4 步 - 确定（基于窗口的大小）沿 X 和 Y 轴的比例 - X 和 Y 中每单位长度有多少像素（？）*/
-        double scaleX = getSize().getWidth() / (maxX - minX);
-        double scaleY = getSize().getHeight() / (maxY - minY);
+
         // 第 5 步 - 为了使图像不失真 - 比例必须相同
         // 我们选择最小比例因子作为基础
         scale = Math.min(scaleX, scaleY);
+
+        if(!zoom){
+            if (scale == scaleX) {
+                double yIncrement = 0;
+
+                yIncrement = (getSize().getHeight() / scale - (maxY - minY)) / 2;
+
+                maxY += yIncrement;
+                minY -= yIncrement;
+            }
+            if (scale == scaleY) {
+                double xIncrement = 0;
+
+                xIncrement = (getSize().getWidth() / scale - (maxX - minX)) / 2;
+                maxX += xIncrement;
+                minX -= xIncrement;
+
+            }
+        }
         // 步骤 6 - 根据选择的比例调整显示区域的边框
-        if (scale==scaleX)
-        {
-            /* 如果以沿 X 轴的刻度为基础，则沿 Y 轴的划分较少,
-             * 那些。要渲染的 Y 范围将小于窗口高度。所以需要加分部，我们这样做：
-             * 1) 让我们计算在所选比例下 Y 中适合多少个分区 - getSize().GetHeight()/比例
-             * 2) 从中减去最初需要多少个部门
-             * 3) 在 maxY 和 minY 处投入缺失距离的一半*/
-            double yIncrement = (getSize().getHeight()/scale - (maxY - minY))/2;
-            maxY += yIncrement;
-            minY -= yIncrement;
-        }
-        if (scale==scaleY)
-        {
-            // 如果以沿Y轴的刻度为基础，以此类推
-            double xIncrement = (getSize().getWidth()/scale - (maxX - minX))/2;
-            maxX += xIncrement;
-            minX -= xIncrement;
-        }
+
         // 步骤 7 - 保存当前画布设置
         Graphics2D canvas = (Graphics2D) g;
         Stroke oldStroke = canvas.getStroke();	//返回画布的当前笔
@@ -143,9 +216,17 @@ public class GraphicsDisplay extends JPanel
         if (showGraphics)
             paintGraphics(canvas);
 
+        if (SMP != null)
+            paintHint(canvas);
         // 然后（如有必要）显示构建图形的点的标记。
         if (showMarkers)
             paintMarkers(canvas);
+
+        if (selMode) {
+            canvas.setColor(Color.BLACK);
+            canvas.setStroke(selStroke);
+            canvas.draw(rect);
+        }
 
         // 步骤 9 - 恢复旧的画布设置
         canvas.setFont(oldFont);
@@ -153,6 +234,37 @@ public class GraphicsDisplay extends JPanel
         canvas.setColor(oldColor);
         canvas.setStroke(oldStroke);
     }
+
+    protected void paintHint(Graphics2D canvas) {
+        Color oldColor = canvas.getColor();
+        canvas.setColor(Color.PINK);
+        StringBuffer label = new StringBuffer();
+        label.append("X=");
+        label.append(formatter.format((SMP.xd)));
+        label.append(", Y=");
+        label.append(formatter.format((SMP.yd)));
+        FontRenderContext context = canvas.getFontRenderContext();
+        Rectangle2D bounds = captionFont.getStringBounds(label.toString(),context);
+        if (true) {
+            int dy = -10;
+            int dx = +7;
+            if (SMP.y < bounds.getHeight())
+                dy = +13;
+            if (getWidth() < bounds.getWidth() + SMP.x + 20)
+                dx = -(int) bounds.getWidth() - 15;
+            canvas.drawString (label.toString(), SMP.x + dx, SMP.y + dy);
+        } else {
+            int dy = 10;
+            int dx = -7;
+            if (SMP.x < 10)
+                dx = +13;
+            if (SMP.y < bounds.getWidth() + 20)
+                dy = -(int) bounds.getWidth() - 15;
+            canvas.drawString (label.toString(), getHeight() - SMP.y + dy, SMP.x + dx);
+        }
+        canvas.setColor(oldColor);
+    }
+
 
     // //通过读取坐标绘制图表
     protected void paintGraphics(Graphics2D canvas)
@@ -170,6 +282,10 @@ public class GraphicsDisplay extends JPanel
         {
             // 将值（x，y）转换为屏幕点上的点
             Point2D.Double point = xyToPoint(graphicsData[i][0], graphicsData[i][1]);
+
+
+            graphicsDataI[i][0] = (int) point.getX();
+            graphicsDataI[i][1] = (int) point.getY();
             if (i>0)
             {
                 // 不是循环的第一次迭代 - 画线到点
@@ -333,5 +449,158 @@ public class GraphicsDisplay extends JPanel
         // 将其坐标设置为现有点的坐标 + 指定的偏移量
         dest.setLocation(src.getX() + deltaX, src.getY() + deltaY);
         return dest;
+    }
+    protected Point2D.Double pointToXY(int x, int y) {
+        Point2D.Double p = new Point2D.Double();
+        p.x = x / scale + minX;
+        int q = (int) xyToPoint(0, 0).y;
+        p.y = maxY - maxY * ((double) y / (double) q);
+
+        return p;
+    }
+
+    public class MouseMotionHandler implements MouseMotionListener, MouseListener {
+        private double comparePoint(Point p1, Point p2) {
+            return Math.sqrt(Math.pow(p1.x - p2.x, 2)
+                    + Math.pow(p1.y - p2.y, 2));
+        }
+
+        private GraphPoint find(int x, int y) {
+            GraphPoint smp = new GraphPoint();
+            GraphPoint smp2 = new GraphPoint();
+            double r, r2 = 1000;
+            for (int i = 0; i < graphicsData.length; i++) {
+                Point p = new Point();
+                p.x = x;
+                p.y = y;
+                Point p2 = new Point();
+                p2.x = graphicsDataI[i][0];
+                p2.y = graphicsDataI[i][1];
+                r = comparePoint(p, p2);
+                if (r < 7.0) {
+                    smp.x = graphicsDataI[i][0];
+                    smp.y = graphicsDataI[i][1];
+                    smp.xd = graphicsData[i][0];
+                    smp.yd = graphicsData[i][1];
+                    smp.n = i;
+                    if (r < r2) {
+                        r2 = r;
+                        smp2 = smp;
+                    }
+                    return smp2;
+                }
+            }
+            return null;
+        }
+
+        //
+        public void mouseMoved(MouseEvent ev) {
+            GraphPoint smp;
+            smp = find(ev.getX(), ev.getY());
+            if (smp != null) {
+                setCursor(Cursor.getPredefinedCursor(8));
+                SMP = smp;
+            } else {
+                setCursor(Cursor.getPredefinedCursor(0));
+                SMP = null;
+            }
+            repaint();
+        }
+
+        public void mouseDragged(MouseEvent e) {
+            if (selMode) {
+                rect.setFrame(mausePX, mausePY, e.getX() - rect.getX(),
+                        e.getY() - rect.getY());
+
+                repaint();
+            }
+            if (dragMode) {
+
+                if(pointToXY(e.getX(), e.getY()).y<maxY && pointToXY(e.getX(), e.getY()).y>minY){
+                    graphicsData[SMP.n][1] = pointToXY(e.getX(), e.getY()).y;
+                    SMP.yd = pointToXY(e.getX(), e.getY()).y;
+                    SMP.y = e.getY();
+                }
+                repaint();
+            }
+        }
+
+
+        public void mouseClicked(MouseEvent e) {
+            if (e.getButton() != 3)//右键重置
+                return;
+            try {
+                zone = stack.pop();
+            } catch (EmptyStackException err) {
+
+            }
+            if(stack.empty())
+                zoom=false;
+            repaint();
+        }
+
+        @Override
+        public void mousePressed(MouseEvent e) {
+            if (e.getButton() != 1)
+                return;
+            if (SMP != null) {
+                selMode = false;
+                dragMode = true;
+            } else {
+                dragMode = false;
+                selMode = true;
+                mausePX = e.getX();
+                mausePY = e.getY();
+                if (!false)
+                    rect.setFrame(e.getX(), e.getY(), 0, 0);
+                else
+                    rect.setFrame(e.getX(), e.getY(), 0, 0);
+            }
+        }
+
+        public void mouseEntered(MouseEvent arg0) {
+
+        }
+
+        public void mouseExited(MouseEvent arg0) {
+
+        }
+
+
+
+        //拖动
+        public void mouseReleased(MouseEvent e) {
+            rect.setFrame(0, 0, 0, 0);
+            if (e.getButton() != 1) {
+                repaint();
+                return;
+            }
+            if (selMode) {
+
+                if (e.getX() <= mausePX || e.getY() <= mausePY)
+                    return;
+                int eY = e.getY();
+                int eX = e.getX();
+                if (eY > getHeight())
+                    eY = getHeight();
+                if (eX > getWidth())
+                    eX = getWidth();
+                double MAXX = pointToXY(eX, 0).x;
+                double MINX = pointToXY(mausePX, 0).x;
+                double MAXY = pointToXY(0, mausePY).y;
+                double MINY = pointToXY(0, eY).y;
+                stack.push(zone);
+                zone = new Zone();
+                zone.use = true;
+                zone.MAXX = MAXX;
+                zone.MINX = MINX;
+                zone.MINY = MINY;
+                zone.MAXY = MAXY;
+                selMode = false;
+                zoom=true;
+
+            }
+            repaint();
+        }
     }
 }
